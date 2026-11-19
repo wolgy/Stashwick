@@ -30,6 +30,11 @@ pub struct Out {
 }
 
 pub fn run_full(repo: &Path, args: &[&str], input: Option<Vec<u8>>) -> R<Out> {
+    run_full_env(repo, args, input, &[])
+}
+
+/// Like `run_full`, with extra environment variables that override the defaults below.
+fn run_full_env(repo: &Path, args: &[&str], input: Option<Vec<u8>>, envs: &[(&str, &str)]) -> R<Out> {
     let mut cmd = Command::new(exe());
     cmd.arg("-C")
         .arg(repo)
@@ -46,6 +51,7 @@ pub fn run_full(repo: &Path, args: &[&str], input: Option<Vec<u8>>) -> R<Out> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    cmd.envs(envs.iter().copied());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -97,7 +103,11 @@ pub fn run_op(repo: &Path, args: &[&str]) -> R<String> {
 }
 
 fn run_op_in(repo: &Path, args: &[&str], input: Option<Vec<u8>>) -> R<String> {
-    let o = run_full(repo, args, input)?;
+    run_op_env(repo, args, input, &[])
+}
+
+fn run_op_env(repo: &Path, args: &[&str], input: Option<Vec<u8>>, envs: &[(&str, &str)]) -> R<String> {
+    let o = run_full_env(repo, args, input, envs)?;
     let mut s = String::from_utf8_lossy(&o.stdout).trim().to_string();
     let e = o.stderr.trim();
     if !e.is_empty() {
@@ -870,7 +880,14 @@ pub fn sequencer(repo: &Path, op: &str, action: &str) -> R<String> {
     if !["rebase", "cherry-pick", "revert"].contains(&op) || !["continue", "abort", "skip"].contains(&action) {
         return Err(format!("unknown sequencer operation: {op} {action}"));
     }
-    run_op(repo, &[op, &format!("--{action}")])
+    let res = run_op(repo, &[op, &format!("--{action}")]);
+    // a squash that stopped on a conflict left its message behind for the pending exec line
+    if op == "rebase" && repo_state(repo).is_ok_and(|s| s.kind.is_empty()) {
+        if let Ok(gd) = git_dir(repo) {
+            let _ = std::fs::remove_file(gd.join("stashwick-squash-msg"));
+        }
+    }
+    res
 }
 
 pub fn cherry_pick(repo: &Path, hash: &str) -> R<String> {
@@ -900,6 +917,109 @@ pub fn reset(repo: &Path, hash: &str, mode: &str) -> R<String> {
         _ => return Err(format!("unknown reset mode: {mode}")),
     };
     run_op(repo, &["reset", m, not_option("commit", hash)?, "--"])
+}
+
+/// Quote for the POSIX shell git uses for editors and `exec` lines (also on Windows).
+fn sh_quote(s: &str) -> String {
+    let s = if cfg!(windows) { s.replace('\\', "/") } else { s.to_string() };
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Squash commits of the current branch into one, with `message`.
+///
+/// The commits don't have to be adjacent: the later ones are moved up to the
+/// oldest selected commit (like IntelliJ), and the commits in between are
+/// replayed after it. Runs `git rebase -i` with a prepared todo list, so a
+/// conflict stops the rebase normally and can be resolved / continued / aborted.
+pub fn squash(repo: &Path, hashes: &[String], message: &str) -> R<String> {
+    if message.trim().is_empty() {
+        return Err("The commit message is empty.".into());
+    }
+    if !repo_state(repo)?.kind.is_empty() {
+        return Err("Finish or abort the current merge / rebase / cherry-pick first.".into());
+    }
+    let short = |h: &str| h.chars().take(8).collect::<String>();
+    let mut sel: Vec<String> = Vec::new();
+    for h in hashes {
+        not_option("commit", h)?;
+        let full = run_s(repo, &["rev-parse", "--verify", "-q", &format!("{h}^{{commit}}")])
+            .map_err(|_| format!("Unknown commit {h}"))?
+            .trim()
+            .to_string();
+        if !run_full(repo, &["merge-base", "--is-ancestor", &full, "HEAD"], None)?.ok {
+            return Err(format!("Commit {} is not on the current branch.", short(&full)));
+        }
+        if !sel.contains(&full) {
+            sel.push(full);
+        }
+    }
+    if sel.len() < 2 {
+        return Err("Select at least two commits to squash.".into());
+    }
+    // the oldest selected commit is the one furthest from HEAD
+    let mut oldest = (0usize, String::new());
+    for h in &sel {
+        let d: usize = run_s(repo, &["rev-list", "--count", &format!("{h}..HEAD")])?.trim().parse().unwrap_or(0);
+        if d >= oldest.0 {
+            oldest = (d, h.clone());
+        }
+    }
+    let oldest = oldest.1;
+    let base = commit_parents(repo, &oldest)?;
+    if base.len() > 1 {
+        return Err(format!("{} is a merge commit; merge commits can't be squashed.", short(&oldest)));
+    }
+    let range_spec = base.first().map(|p| format!("{p}..HEAD")).unwrap_or_else(|| "HEAD".into());
+    let mut range = Vec::new();
+    for line in run_s(repo, &["rev-list", "--reverse", "--parents", &range_spec])?.lines() {
+        let mut it = line.split_whitespace();
+        let Some(h) = it.next() else { continue };
+        if it.count() > 1 {
+            return Err(format!(
+                "There is a merge commit ({}) between the selected commits and HEAD. Squashing across merges is not supported.",
+                short(h)
+            ));
+        }
+        range.push(h.to_string());
+    }
+    if let Some(h) = sel.iter().find(|h| !range.contains(h)) {
+        return Err(format!("Commit {} is not on the current branch.", short(h)));
+    }
+
+    let gd = git_dir(repo)?;
+    let todo_path = gd.join("stashwick-squash-todo");
+    let msg_path = gd.join("stashwick-squash-msg");
+    let mut msg = message.trim_end().to_string();
+    msg.push('\n');
+    std::fs::write(&msg_path, msg).map_err(|e| e.to_string())?;
+    let mut todo = format!("pick {oldest}\n");
+    for h in range.iter().filter(|h| **h != oldest && sel.contains(h)) {
+        todo.push_str(&format!("fixup {h}\n"));
+    }
+    // --no-verify: the content was already committed; a failing pre-commit hook would only strand the rebase
+    todo.push_str(&format!(
+        "exec {} commit --amend --no-verify --cleanup=whitespace -F {}\n",
+        sh_quote(&exe()),
+        sh_quote(&msg_path.to_string_lossy())
+    ));
+    for h in range.iter().filter(|h| !sel.contains(h)) {
+        todo.push_str(&format!("pick {h}\n"));
+    }
+    std::fs::write(&todo_path, todo).map_err(|e| e.to_string())?;
+
+    let editor = format!("cp {}", sh_quote(&todo_path.to_string_lossy()));
+    let mut args = vec!["rebase", "-i", "--autostash"];
+    match base.first() {
+        Some(p) => args.push(p),
+        None => args.push("--root"),
+    }
+    let res = run_op_env(repo, &args, None, &[("GIT_SEQUENCE_EDITOR", &editor)]);
+    let _ = std::fs::remove_file(&todo_path);
+    // keep the message while a conflict has the rebase stopped: the pending exec line still needs it
+    if res.is_ok() {
+        let _ = std::fs::remove_file(&msg_path);
+    }
+    res
 }
 
 pub fn create_tag(repo: &Path, name: &str, rev: &str, message: &str) -> R<String> {
@@ -1484,6 +1604,79 @@ mod tests {
         commit(&r, "main", false, false).unwrap();
         assert!(merge(&r, "feature").is_err());
         assert!(conflict_versions(&r, "f.txt").unwrap().binary);
+        fs::remove_dir_all(&r).ok();
+    }
+
+    #[test]
+    fn squash_commits() {
+        let r = tmp_repo("squash");
+        let mut ids = Vec::new();
+        for i in 1..=5 {
+            fs::write(r.join(format!("f{i}.txt")), format!("{i}\n")).unwrap();
+            stage(&r, &[format!("f{i}.txt")]).unwrap();
+            commit(&r, &format!("c{i}"), false, false).unwrap();
+            ids.push(run_s(&r, &["rev-parse", "HEAD"]).unwrap().trim().to_string());
+        }
+        let tree = |r: &Path| run_s(r, &["rev-parse", "HEAD^{tree}"]).unwrap();
+        let subjects = |r: &Path| log(r, &LogQuery { branch: Some("HEAD".into()), ..Default::default() }).unwrap().into_iter().map(|c| c.subject).collect::<Vec<_>>();
+        let before = tree(&r);
+        // uncommitted changes survive (autostash)
+        fs::write(r.join("f1.txt"), "dirty\n").unwrap();
+
+        // not adjacent: c4 moves up into c2, c3 and c5 are replayed after it
+        squash(&r, &[ids[3].clone(), ids[1].clone()], "c2+c4\n\n#123 body").unwrap();
+        assert_eq!(subjects(&r), ["c5", "c3", "c2+c4", "c1"]);
+        assert_eq!(tree(&r), before);
+        assert_eq!(run_s(&r, &["log", "-1", "--format=%B", "HEAD~2"]).unwrap().trim_end(), "c2+c4\n\n#123 body");
+        assert_eq!(fs::read_to_string(r.join("f1.txt")).unwrap(), "dirty\n");
+        assert_eq!(status(&r).unwrap().state.kind, "");
+        assert!(!git_dir(&r).unwrap().join("stashwick-squash-msg").exists());
+
+        // including the root commit
+        let h = |rev: &str| run_s(&r, &["rev-parse", rev]).unwrap().trim().to_string();
+        squash(&r, &[h("HEAD~3"), h("HEAD~2")], "start").unwrap();
+        assert_eq!(subjects(&r), ["c5", "c3", "start"]);
+        assert_eq!(tree(&r), before);
+
+        // refused: one commit, empty message, commit not on the branch, merge in the range
+        assert!(squash(&r, &[h("HEAD")], "x").is_err());
+        assert!(squash(&r, &[h("HEAD"), h("HEAD~1")], "  ").is_err());
+        create_branch(&r, "side", "HEAD~1", true).unwrap();
+        fs::write(r.join("side.txt"), "s\n").unwrap();
+        stage(&r, &["side.txt".into()]).unwrap();
+        commit(&r, "side", false, false).unwrap();
+        let side = h("HEAD");
+        checkout(&r, "main", "local").unwrap();
+        assert!(squash(&r, &[side.clone(), h("HEAD")], "x").unwrap_err().contains("not on the current branch"));
+        merge(&r, "side").unwrap();
+        assert!(squash(&r, &[h("HEAD~1"), h("HEAD~2")], "x").unwrap_err().contains("merge"));
+        fs::remove_dir_all(&r).ok();
+    }
+
+    #[test]
+    fn squash_conflict_then_continue() {
+        let r = tmp_repo("squash-conflict");
+        let mut ids = Vec::new();
+        for (i, v) in ["a", "b", "c", "d"].iter().enumerate() {
+            fs::write(r.join("f.txt"), format!("{v}\n")).unwrap();
+            stage(&r, &["f.txt".into()]).unwrap();
+            commit(&r, &format!("c{}", i + 1), false, false).unwrap();
+            ids.push(run_s(&r, &["rev-parse", "HEAD"]).unwrap().trim().to_string());
+        }
+        // moving c4 (c->d) up to c2 (a->b) can't apply without c3
+        assert!(squash(&r, &[ids[1].clone(), ids[3].clone()], "b and d").is_err());
+        assert_eq!(status(&r).unwrap().state.kind, "rebasing");
+        resolve_conflict(&r, "f.txt", "d\n").unwrap();
+        sequencer(&r, "rebase", "continue").unwrap_or_else(|e| {
+            // c3 (b->c) now conflicts too; keep "d"
+            assert!(e.contains("onflict"), "{e}");
+            resolve_conflict(&r, "f.txt", "d\n").unwrap();
+            sequencer(&r, "rebase", "continue").unwrap()
+        });
+        assert_eq!(status(&r).unwrap().state.kind, "");
+        // the pending exec still applied the new message (c3 became empty with "d" kept, so git dropped it)
+        assert_eq!(run_s(&r, &["log", "--format=%s", "HEAD"]).unwrap(), "b and d\nc1\n");
+        assert!(!git_dir(&r).unwrap().join("stashwick-squash-msg").exists());
         fs::remove_dir_all(&r).ok();
     }
 }

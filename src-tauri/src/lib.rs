@@ -75,6 +75,7 @@ cmd_mut!(sequencer(op: String, action: String) -> String => |r| git::sequencer(r
 cmd_mut!(cherry_pick(hash: String) -> String => |r| git::cherry_pick(r, &hash));
 cmd_mut!(revert(hash: String) -> String => |r| git::revert(r, &hash));
 cmd_mut!(reset(hash: String, mode: String) -> String => |r| git::reset(r, &hash, &mode));
+cmd_mut!(squash(hashes: Vec<String>, message: String) -> String => |r| git::squash(r, &hashes, &message));
 cmd_mut!(create_tag(name: String, rev: String, message: String) -> String => |r| git::create_tag(r, &name, &rev, &message));
 cmd_mut!(fetch() -> String => |r| git::fetch(r));
 cmd_mut!(pull(rebase: bool) -> String => |r| git::pull(r, rebase));
@@ -208,7 +209,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             status, file_diff, apply_lines, stage, unstage, rollback, commit, last_message, log, commit_detail,
             commit_file_diff, branches, remotes, checkout, create_branch, delete_branch, rename_branch, merge, rebase,
-            sequencer, cherry_pick, revert, reset, create_tag, fetch, pull, push, stash_list, stash_push, stash_action,
+            sequencer, cherry_pick, revert, reset, squash, create_tag, fetch, pull, push, stash_list, stash_push, stash_action,
             conflict_versions, resolve_conflict, accept_side, worktree_list, worktree_add, worktree_action, open_repo, summaries, scan_repos, set_git_path,
             git_version, open_in_editor, load_config, save_config
         ])

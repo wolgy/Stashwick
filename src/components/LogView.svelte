@@ -1,8 +1,8 @@
 <script lang="ts">
   import { api, type BranchInfo, type Commit, type CommitDetail, type FileDiff, type ChangedFile } from '../lib/api'
-  import { app, repo, op, fmtDate, short, showMenu, toast, type MenuItem } from '../lib/store.svelte'
+  import { app, repo, op, fmtDate, short, showMenu, toast, mod, type MenuItem } from '../lib/store.svelte'
   import { layoutGraph, newGraphState, laneColor, type GraphRow, type GraphState } from '../lib/graph'
-  import { branchMenuItems, checkout, newBranch, newTag, resetTo, mergeInto, rebaseOnto, newWorktree, otherWorktree } from '../lib/actions'
+  import { branchMenuItems, checkout, newBranch, newTag, resetTo, mergeInto, rebaseOnto, newWorktree, otherWorktree, squashCommits } from '../lib/actions'
   import { splitter, sizeStore, copyText, splitPath } from '../lib/ui'
   import DiffView from './DiffView.svelte'
 
@@ -23,6 +23,10 @@
   let loading = $state(false)
   let error = $state<string | null>(null)
   let selected = $state<string | null>(null)
+  // multi-selection (⌘/Ctrl-click, Shift-click); `selected` is the one shown in the details panel
+  let marked = $state<string[]>([])
+  let anchor: string | null = null
+  const markedSet = $derived(new Set(marked))
   let detail = $state<CommitDetail | null>(null)
   let author = $state('')
   let text = $state('')
@@ -67,7 +71,11 @@
       commits = reset ? page : [...commits, ...page]
       graph = reset ? rows : [...graph, ...rows]
       exhausted = page.length < limit
-      if (reset && selected && !commits.some((c) => c.hash === selected)) selected = null
+      if (reset) {
+        const have = new Set(commits.map((c) => c.hash))
+        if (selected && !have.has(selected)) selected = null
+        if (marked.some((h) => !have.has(h))) marked = marked.filter((h) => have.has(h))
+      }
       if (reset && !selected && commits.length) select(commits[0].hash)
     } catch (e) {
       if (id === reqId) {
@@ -101,8 +109,12 @@
   })
 
   let detailReq = 0
-  async function select(hash: string) {
+  async function select(hash: string, keepMarked = false) {
     selected = hash
+    if (!keepMarked) {
+      marked = [hash]
+      anchor = hash
+    }
     const r = repo()
     if (!r) return
     const id = ++detailReq
@@ -112,6 +124,24 @@
     } catch (e) {
       if (id === detailReq) detail = null
     }
+  }
+
+  function clickRow(c: Commit, idx: number, e: MouseEvent) {
+    if (mod(e)) {
+      if (markedSet.has(c.hash) && marked.length > 1) {
+        marked = marked.filter((h) => h !== c.hash)
+        if (selected === c.hash) select(marked[marked.length - 1], true)
+      } else {
+        marked = [...marked, c.hash]
+        select(c.hash, true)
+      }
+      anchor = c.hash
+    } else if (e.shiftKey && anchor) {
+      const a = commits.findIndex((x) => x.hash === anchor)
+      if (a < 0) return select(c.hash)
+      marked = commits.slice(Math.min(a, idx), Math.max(a, idx) + 1).map((x) => x.hash)
+      select(c.hash, true)
+    } else select(c.hash)
   }
 
   async function openFile(f: ChangedFile) {
@@ -165,6 +195,7 @@
 
   // ───── menus ─────
   function commitMenu(c: Commit, e: MouseEvent) {
+    if (marked.length > 1 && markedSet.has(c.hash)) return multiMenu(e)
     select(c.hash)
     const local = c.refs.find((r) => r.kind === 'local' && !r.current)
     const target = local?.name ?? c.hash
@@ -187,6 +218,16 @@
       { label: `Rebase Current onto '${label}'`, action: () => rebaseOnto(target) },
     ]
     showMenu(e, items)
+  }
+
+  function multiMenu(e: MouseEvent) {
+    const list = commits.filter((c) => markedSet.has(c.hash)) // newest first
+    const merges = list.some((c) => c.parents.length > 1)
+    showMenu(e, [
+      { label: 'Copy Revision Numbers', action: () => copyText(list.map((c) => c.hash).join('\n')) },
+      '-',
+      { label: `Squash ${list.length} Commits…${merges ? ' (no merge commits)' : ''}`, disabled: merges, action: () => squashCommits(list) },
+    ])
   }
 
   // ───── branch tree ─────
@@ -299,10 +340,10 @@
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
           <div
             class="crow row"
-            class:sel={selected === c.hash}
+            class:sel={markedSet.has(c.hash)}
             class:merge={c.parents.length > 1}
             style="top:{idx * ROW}px"
-            onclick={() => select(c.hash)}
+            onclick={(e) => clickRow(c, idx, e)}
             oncontextmenu={(e) => commitMenu(c, e)}
           >
             <svg class="graph" width={graphW} height={ROW}>

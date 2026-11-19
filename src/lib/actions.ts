@@ -184,6 +184,44 @@ export async function resetTo(hash: string) {
   if (r) await op(`Reset (${r.mode})`, (x) => api.reset(x, hash, r.mode))
 }
 
+/**
+ * Squash commits of the current branch into one. `commits` newest first (Log order);
+ * they don't have to be adjacent (later ones are moved up to the oldest, like IntelliJ).
+ */
+export async function squashCommits(commits: Commit[]) {
+  const r = repo()
+  if (!r || commits.length < 2) return
+  if (commits.some((c) => c.parents.length > 1)) return toast('error', "Merge commits can't be squashed.")
+  const oldestFirst = [...commits].reverse()
+  let messages: string[]
+  try {
+    messages = await Promise.all(oldestFirst.map((c) => api.commitDetail(r, c.hash).then((d) => d.message)))
+  } catch (e) {
+    return toast('error', String(e))
+  }
+  let warning = ''
+  const st = app.status
+  if (st?.upstream) {
+    const unpushed = await api.log(r, { branch: `${st.upstream}..HEAD`, skip: 0, limit: 0 }).catch(() => null)
+    const set = new Set(unpushed?.map((c) => c.hash))
+    if (unpushed && commits.some((c) => !set.has(c.hash)))
+      warning = `\n⚠ Some of these commits are already pushed to ${st.upstream}. After squashing you'll need to force push.`
+  }
+  const res = await dialog({
+    title: `Squash ${commits.length} Commits`,
+    message: `The commits are combined into one at the position of the oldest. Commits in between are replayed after it.${warning}`,
+    detail: oldestFirst.map((c) => `${short(c.hash)}  ${c.subject}`).join('\n'),
+    fields: [{ key: 'message', label: 'Commit message', type: 'textarea', value: messages.join('\n\n') }],
+    ok: 'Squash',
+  })
+  if (!res) return
+  const message = String(res.message ?? '')
+  if (!message.trim()) return toast('error', 'The commit message is empty.')
+  await op(`Squash ${commits.length} commits`, (x) => api.squash(x, commits.map((c) => c.hash), message), {
+    success: `Squashed ${commits.length} commits`,
+  })
+}
+
 export async function sequencer(action: 'continue' | 'abort' | 'skip') {
   const kind = app.status?.state.kind
   const opName = kind === 'rebasing' ? 'rebase' : kind === 'merging' ? 'merge' : kind === 'cherry-picking' ? 'cherry-pick' : kind === 'reverting' ? 'revert' : ''

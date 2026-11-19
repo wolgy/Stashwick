@@ -176,6 +176,7 @@ export const api = {
   cherryPick: (repo: string, hash: string) => call<string>('cherry_pick', { repo, hash }),
   revert: (repo: string, hash: string) => call<string>('revert', { repo, hash }),
   reset: (repo: string, hash: string, mode: string) => call<string>('reset', { repo, hash, mode }),
+  squash: (repo: string, hashes: string[], message: string) => call<string>('squash', { repo, hashes, message }),
   createTag: (repo: string, name: string, rev: string, message: string) =>
     call<string>('create_tag', { repo, name, rev, message }),
   fetch: (repo: string) => call<string>('fetch', { repo }),

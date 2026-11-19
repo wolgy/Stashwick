@@ -15,6 +15,7 @@ Built with Tauri 2 (Rust) and Svelte 5. The installer is about 2–5 MB.
 | **Diff viewer** | Side-by-side or unified. |
 | **Log** | Commit graph with lanes, branch/remote/tag labels, filters for branch, text, author and path, and a virtualized list that handles large histories. Details panel shows changed files; click one to see its diff. |
 | **Commit context menu** | Checkout revision, new branch or tag here, cherry-pick, revert, reset (soft/mixed/keep/hard), merge into current, rebase current onto. |
+| **Squash commits** | Select several commits in the Log (`Ctrl/⌘`-click, `Shift`-click), right-click → *Squash N Commits…*, and edit the combined message. They don't have to be adjacent: later ones move up to the oldest, and the commits in between are replayed after it. Uncommitted changes are stashed and restored automatically. If a conflict stops it, use the rebase banner as usual. |
 | **Branches popup** (`Ctrl/⌘+B`) | Fuzzy search; checkout (remote branches get a local tracking branch); new branch from…; merge; rebase; push; rename; delete. |
 | **Push dialog** (`Ctrl/⌘+Shift+K`) | Shows the outgoing commits first. Publishes new branches with upstream. Optional `--force-with-lease`. |
 | **Conflict resolver** | 3-way merge: Yours | Result | Theirs. Non-conflicting changes are applied automatically. For each conflict pick left, right, both (either order), base, or edit the text by hand. Handles binary files and modify/delete conflicts. |
@@ -86,7 +87,7 @@ src/lib/diff3.ts         Myers line diff + 3-way merge for the conflict resolver
 src/components/          Sidebar, CommitView, DiffView, LogView, BranchesPopup, MergeTool, Panels, Overlays
 ```
 
-Ideas for later: interactive rebase (reorder, squash, reword), file history and blame view, a shelf, syntax highlighting in diffs, submodule support.
+Ideas for later: more interactive rebase (reorder, reword, drop), file history and blame view, a shelf, syntax highlighting in diffs, submodule support.
 
 ## License
 
