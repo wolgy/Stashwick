@@ -3,8 +3,8 @@ name = "stashwick"
 version = "0.1.0"
 description = "A lightweight, IDEA-style Git client"
 authors = []
-license = "MIT"
-repository = ""
+license = "GPL-3.0-only"
+repository = "https://github.com/wolgy/Stashwick"
 edition = "2024"
 rust-version = "1.90"
 

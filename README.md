@@ -2,7 +2,7 @@
 
 A small, fast desktop Git client modeled on the Git tooling in JetBrains IDEs, for when your editor (Zed, Helix, Neovim…) has only basic Git support.
 
-No account, no license, no telemetry. It runs your installed `git`, so your existing config, SSH keys, credential helpers, hooks and signing all work as usual.
+No account, no subscription, no telemetry. It runs your installed `git`, so your existing config, SSH keys, credential helpers, hooks and signing all work as usual.
 
 Built with Tauri 2 (Rust) and Svelte 5. The installer is about 2–5 MB.
 
@@ -90,4 +90,4 @@ Ideas for later: interactive rebase (reorder, squash, reword), file history and 
 
 ## License
 
-MIT
+GPL-3.0-only. See [LICENSE](LICENSE).
