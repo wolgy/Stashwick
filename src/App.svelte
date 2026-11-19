@@ -97,6 +97,10 @@
     {:else}
       <header class="toolbar row">
         <span class="repo-name ellipsis" title={app.config.activeRepo}>{repoName(app.config.activeRepo)}</span>
+        <button class="branch-btn" onclick={() => (app.worktreesOpen = true)} title="Worktrees: list, add, open and remove">
+          <span class="ellipsis">⧉ {repoName(app.config.activeRepo)}</span>
+          <span class="dim">▾</span>
+        </button>
         <button class="branch-btn" onclick={() => (app.branchesOpen = !app.branchesOpen)} title="Branches ({modLabel}B)">
           <span class="mono">⎇ {st?.branch ?? (st?.head ? `(${short(st.head)})` : '…')}</span>
           {#if st?.ahead}<span class="ab">↑{st.ahead}</span>{/if}
@@ -119,7 +123,6 @@
         <span class="vsep"></span>
         <button class="flat" disabled={!!app.busy} onclick={stashChanges} title="Stash changes">Stash</button>
         <button class="flat" onclick={() => (app.stashOpen = true)} title="Stash list">Stashes…</button>
-        <button class="flat" onclick={() => (app.worktreesOpen = true)} title="List, add, open and remove worktrees">Worktrees…</button>
         <span class="vsep"></span>
         <button class="flat" onclick={refreshAll} title="Refresh (F5)">⟳</button>
         <button class="flat" onclick={() => (app.settingsOpen = true)} title="Settings">⚙</button>
