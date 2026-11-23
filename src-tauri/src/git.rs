@@ -574,6 +574,8 @@ pub struct Commit {
     pub time: i64,
     pub subject: String,
     pub refs: Vec<RefLabel>,
+    /// Reachable from main/master (local or a remote's), i.e. already merged.
+    pub in_main: bool,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -626,24 +628,27 @@ pub fn log(repo: &Path, q: &LogQuery) -> R<Vec<Commit>> {
         a.push("--regexp-ignore-case".into());
         a.push("--fixed-strings".into());
     }
-    match q.branch.as_ref().filter(|s| !s.is_empty()) {
-        Some(b) => a.push(b.clone()),
+    let revs: Vec<String> = match q.branch.as_ref().filter(|s| !s.is_empty()) {
+        Some(b) => vec![b.clone()],
         None => {
             if !has_head(repo) && run_s(repo, &["for-each-ref", "--count=1", "refs/heads", "refs/remotes"])?.trim().is_empty() {
                 return Ok(vec![]);
             }
-            a.extend(["--branches", "--remotes", "--tags"].map(String::from));
+            let mut v: Vec<String> = ["--branches", "--remotes", "--tags"].map(String::from).into();
             if has_head(repo) {
-                a.push("HEAD".into());
+                v.push("HEAD".into());
             }
+            v
         }
-    }
+    };
+    a.extend(revs.iter().cloned());
     a.push("--".into());
     if let Some(p) = q.path.as_ref().filter(|s| !s.trim().is_empty()) {
         a.push(p.trim().into());
     }
     let args: Vec<&str> = a.iter().map(|s| s.as_str()).collect();
     let raw = run_s(repo, &args)?;
+    let outside_main = not_in_main(repo, &revs)?;
     let mut out = Vec::new();
     for rec in raw.split('\x1e') {
         let rec = rec.trim_start_matches('\n');
@@ -662,9 +667,29 @@ pub fn log(repo: &Path, q: &LogQuery) -> R<Vec<Commit>> {
             time: f[4].parse().unwrap_or(0),
             refs: parse_refs(f[5]),
             subject: f[6].into(),
+            in_main: outside_main.as_ref().is_some_and(|o| !o.contains(f[0])),
         });
     }
     Ok(out)
+}
+
+/// Commits of `revs` that are not reachable from main/master (local or remote),
+/// or None when the repository has no such branch.
+fn not_in_main(repo: &Path, revs: &[String]) -> R<Option<HashSet<String>>> {
+    let mains = run_s(
+        repo,
+        &["for-each-ref", "--format=%(refname)", "refs/heads/main", "refs/heads/master", "refs/remotes/*/main", "refs/remotes/*/master"],
+    )?;
+    let mains: Vec<&str> = mains.lines().filter(|l| !l.is_empty()).collect();
+    if mains.is_empty() || revs.is_empty() {
+        return Ok(None);
+    }
+    let mut a: Vec<&str> = vec!["rev-list"];
+    a.extend(revs.iter().map(|s| s.as_str()));
+    a.push("--not");
+    a.extend(mains);
+    a.push("--");
+    Ok(Some(run_s(repo, &a)?.lines().map(String::from).collect()))
 }
 
 fn commit_parents(repo: &Path, hash: &str) -> R<Vec<String>> {
@@ -1678,5 +1703,38 @@ mod tests {
         assert_eq!(run_s(&r, &["log", "--format=%s", "HEAD"]).unwrap(), "b and d\nc1\n");
         assert!(!git_dir(&r).unwrap().join("stashwick-squash-msg").exists());
         fs::remove_dir_all(&r).ok();
+    }
+
+    #[test]
+    fn log_marks_commits_in_main() {
+        let r = tmp_repo("inmain");
+        let c = |r: &Path, msg: &str| {
+            fs::write(r.join("f.txt"), msg).unwrap();
+            stage(r, &["f.txt".into()]).unwrap();
+            commit(r, msg, false, false).unwrap();
+        };
+        c(&r, "m1");
+        c(&r, "m2");
+        create_branch(&r, "feat", "", true).unwrap();
+        c(&r, "f1");
+        c(&r, "f2");
+        // f1 reached main on a remote only
+        sh(&r, &["update-ref", "refs/remotes/origin/main", "HEAD~1"]);
+        let in_main = |r: &Path| {
+            log(r, &LogQuery::default()).unwrap().into_iter().map(|c| (c.subject, c.in_main)).collect::<Vec<_>>()
+        };
+        let pairs = |v: &[(&str, bool)]| v.iter().map(|(s, b)| (s.to_string(), *b)).collect::<Vec<_>>();
+        assert_eq!(in_main(&r), pairs(&[("f2", false), ("f1", true), ("m2", true), ("m1", true)]));
+        // a filtered query still gets the flag
+        let one = log(&r, &LogQuery { branch: Some("feat".into()), limit: 1, ..Default::default() }).unwrap();
+        assert!(!one[0].in_main);
+
+        // no main/master branch at all: nothing is marked
+        let t = tmp_repo("inmain-trunk");
+        sh(&t, &["checkout", "-q", "-b", "trunk"]);
+        c(&t, "t1");
+        assert_eq!(in_main(&t), pairs(&[("t1", false)]));
+        fs::remove_dir_all(&r).ok();
+        fs::remove_dir_all(&t).ok();
     }
 }

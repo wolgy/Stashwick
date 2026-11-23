@@ -11,9 +11,9 @@ Built with Tauri 2 (Rust) and Svelte 5. The installer is about 2–5 MB.
 | | |
 |---|---|
 | **Workspaces & repositories** | Group repos into workspaces. Switch from the sidebar or with `Ctrl/⌘+1…9`. Each repo shows its branch, ahead/behind, change count and merge/rebase state. *Scan Folder…* adds every repo it finds under a folder. |
-| **Commit panel** | Staged / Changes / Unversioned / Conflicts groups. Stage, unstage or roll back whole files, **single hunks, or individual lines** (click the line numbers, Shift-click for a range). Amend, sign-off, *Commit and Push…* |
+| **Commit panel** | Staged / Changes / Unversioned / Conflicts groups. *🗀 Folders* shows the files as a directory tree (also in the Log's changed files); right-click or hover a folder to stage, unstage or roll back everything in it. Stage, unstage or roll back whole files, **single hunks, or individual lines** (click the line numbers, Shift-click for a range). Amend, sign-off, *Commit and Push…* |
 | **Diff viewer** | Side-by-side or unified. |
-| **Log** | Commit graph with lanes, branch/remote/tag labels, filters for branch, text, author and path, and a virtualized list that handles large histories. Details panel shows changed files; click one to see its diff. |
+| **Log** | Commit graph with lanes (commits already in `main`/`master`, locally or on a remote, are grey; unmerged work is coloured), branch/remote/tag labels, filters for branch, text, author and path, and a virtualized list that handles large histories. Details panel shows changed files; click one to see its diff. |
 | **Commit context menu** | Checkout revision, new branch or tag here, cherry-pick, revert, reset (soft/mixed/keep/hard), merge into current, rebase current onto. |
 | **Squash commits** | Select several commits in the Log (`Ctrl/⌘`-click, `Shift`-click), right-click → *Squash N Commits…*, and edit the combined message. They don't have to be adjacent: later ones move up to the oldest, and the commits in between are replayed after it. Uncommitted changes are stashed and restored automatically. If a conflict stops it, use the rebase banner as usual. |
 | **Branches popup** (`Ctrl/⌘+B`) | Fuzzy search; checkout (remote branches get a local tracking branch); new branch from…; merge; rebase; push; rename; delete. |

@@ -1,10 +1,11 @@
 <script lang="ts">
   import { api, type BranchInfo, type Commit, type CommitDetail, type FileDiff, type ChangedFile } from '../lib/api'
-  import { app, repo, op, fmtDate, short, showMenu, toast, mod, type MenuItem } from '../lib/store.svelte'
-  import { layoutGraph, newGraphState, laneColor, type GraphRow, type GraphState } from '../lib/graph'
+  import { app, repo, op, fmtDate, short, showMenu, toast, mod, saveConfig, type MenuItem } from '../lib/store.svelte'
+  import { layoutGraph, newGraphState, laneColor, MAIN, type GraphRow, type GraphState } from '../lib/graph'
   import { branchMenuItems, checkout, newBranch, newTag, resetTo, mergeInto, rebaseOnto, newWorktree, otherWorktree, squashCommits } from '../lib/actions'
   import { splitter, sizeStore, copyText, splitPath } from '../lib/ui'
   import DiffView from './DiffView.svelte'
+  import { fileTree, type TreeRow } from '../lib/filetree'
 
   const ROW = 24
   const LANE = 14
@@ -38,7 +39,110 @@
   let viewH = $state(600)
 
   let diffFile = $state<ChangedFile | null>(null)
+  let collapsedDirs = $state<Record<string, boolean>>({})
+  const grouped = $derived(app.config.settings.groupByDir)
+  const fileRows = $derived.by((): TreeRow<ChangedFile>[] => {
+    const fs = detail?.files ?? []
+    return grouped ? fileTree(fs, (f) => f.path, (k) => !!collapsedDirs[k]) : fs.map((f) => ({ kind: 'file', key: f.path, item: f, depth: 0 }))
+  })
+  // ◀ ▶ in the diff window follow the order on screen
+  const visibleFiles = $derived(fileRows.flatMap((r) => (r.kind === 'file' ? [r.item] : [])))
+  function toggleGrouping() {
+    app.config.settings.groupByDir = !grouped
+    saveConfig()
+  }
   let fileDiff = $state<FileDiff | null>(null)
+
+  // ───── column widths ─────
+  // 0 = auto: fit the content of the loaded commits. Dragging a header edge pins a width; double-click returns to auto.
+  type Col = 'author' | 'date' | 'hash'
+  const COLS: Col[] = ['author', 'date', 'hash']
+  const COL_MIN = 36
+  const COL_MAX: Record<Col, number> = { author: 320, date: 260, hash: 160 }
+  const colStores = { author: sizeStore('log.col.author', 0), date: sizeStore('log.col.date', 0), hash: sizeStore('log.col.hash', 0) }
+  let colW = $state<Record<Col, number>>({ author: colStores.author.get(), date: colStores.date.get(), hash: colStores.hash.get() })
+
+  // text measuring via canvas (no DOM layout); results cached per string so reloads only measure new values
+  let fonts = $state({ ui: '', mono: '' })
+  const ctxs: Record<string, CanvasRenderingContext2D | null> = {}
+  const textW = new Map<string, number>()
+  function measure(s: string, kind: 'ui' | 'mono' = 'ui') {
+    const key = kind + '\0' + s
+    let w = textW.get(key)
+    if (w === undefined) {
+      let ctx = ctxs[kind]
+      if (!ctx) {
+        ctx = ctxs[kind] = document.createElement('canvas').getContext('2d')
+        if (!ctx) return s.length * 7
+        ctx.font = fonts[kind]
+      }
+      w = Math.ceil(ctx.measureText(s).width)
+      textW.set(key, w)
+    }
+    return w
+  }
+  $effect(() => {
+    if (!scroller) return
+    const cs = getComputedStyle(scroller)
+    const f = { ui: cs.font, mono: `12px ${cs.getPropertyValue('--mono')}` }
+    if (f.ui !== fonts.ui || f.mono !== fonts.mono) {
+      ctxs.ui = ctxs.mono = null
+      textW.clear()
+      fonts = f
+    }
+  })
+
+  const autoW = $derived.by((): Record<Col, number> => {
+    if (!fonts.ui) return { author: 130, date: 140, hash: 70 } // wait for the real font
+    let a = 0
+    let d = 0
+    const seen = new Set<string>()
+    for (const c of commits) {
+      if (seen.has(c.author)) continue
+      seen.add(c.author)
+      a = Math.max(a, measure(c.author))
+    }
+    // dates share a handful of formats: a sample is enough and avoids formatting thousands of timestamps
+    const step = Math.max(1, Math.floor(commits.length / 400))
+    for (let i = 0; i < commits.length; i += step) d = Math.max(d, measure(fmtDate(commits[i].time)))
+    const h = commits.length ? measure(short(commits[0].hash), 'mono') : 0
+    const fit = (v: number, col: Col, fallback: number) => (v ? Math.min(COL_MAX[col], Math.max(COL_MIN, v + 6)) : fallback)
+    return { author: fit(a, 'author', 130), date: fit(d, 'date', 140), hash: fit(h, 'hash', 70) }
+  })
+  const colWidth = (col: Col) => colW[col] || autoW[col]
+
+  // Fit everything into the panel so nothing overlaps: the graph may take at most 40% of the room left after
+  // the subject's minimum, and the fixed columns shrink proportionally (and ellipsize) when they don't fit.
+  const SUBJ_MIN = 90 // keep in sync with .subject min-width
+  const ROW_CHROME = 5 * 6 + 8 // 5 flex gaps + right padding
+  let centerW = $state(0)
+  const layout = $derived.by(() => {
+    const room = Math.max(0, centerW - ROW_CHROME - SUBJ_MIN)
+    const graphShown = centerW ? Math.min(graphW, Math.max(40, Math.floor(room * 0.4))) : graphW
+    const want = COLS.map(colWidth)
+    const total = want.reduce((a, b) => a + b, 0)
+    const budget = room - graphShown
+    const k = centerW && total > budget ? Math.max(0, budget) / total : 1
+    const cols = Object.fromEntries(COLS.map((c, i) => [c, Math.max(24, Math.floor(want[i] * k))])) as Record<Col, number>
+    return { graph: graphShown, cols }
+  })
+  const colStyle = $derived(COLS.map((col) => `--w-${col}:${layout.cols[col]}px`).join(';'))
+
+  let c0 = 0
+  function colDrag(col: Col) {
+    return {
+      onStart: () => (c0 = layout.cols[col]),
+      // the handle sits on the column's left edge: dragging left widens it
+      onDelta: (dx: number) => {
+        colW[col] = Math.round(Math.max(COL_MIN, Math.min(600, c0 - dx)))
+        colStores[col].set(colW[col])
+      },
+    }
+  }
+  function colAuto(col: Col) {
+    colW[col] = 0
+    colStores[col].set(0)
+  }
 
   const filtered = $derived(!!(author.trim() || text.trim() || app.logFilter.path.trim()))
   const graphW = $derived(filtered ? 18 : Math.min(Math.max(...graph.slice(0, 2000).map((g) => g.width), 1) * LANE + 8, 260))
@@ -157,8 +261,8 @@
   }
   function stepFile(d: number) {
     if (!detail || !diffFile) return
-    const i = detail.files.findIndex((f) => f.path === diffFile!.path)
-    const n = detail.files[i + d]
+    const i = visibleFiles.findIndex((f) => f.path === diffFile!.path)
+    const n = visibleFiles[i + d]
     if (n) openFile(n)
   }
 
@@ -310,7 +414,7 @@
   <div class="splitter" use:splitter={{ onStart: () => (s0 = tree), onDelta: (dx) => { tree = Math.max(140, Math.min(500, s0 + dx)); treeW.set(tree) } }}></div>
 
   <!-- commit table -->
-  <div class="center">
+  <div class="center" style={colStyle} bind:clientWidth={centerW}>
     <div class="filters row">
       <input type="text" class="grow" placeholder="Text or hash in message" bind:value={text} spellcheck="false" />
       <input type="text" style="width:130px" placeholder="User" bind:value={author} spellcheck="false" />
@@ -321,10 +425,21 @@
       {#if filtered}<button class="flat" onclick={() => { text = ''; author = ''; app.logFilter.path = '' }}>Clear</button>{/if}
     </div>
     <div class="thead row">
-      <span class="grow" style="padding-left:{graphW}px">Subject</span>
-      <span class="c-author">Author</span>
-      <span class="c-date">Date</span>
-      <span class="c-hash">Hash</span>
+      <span class="th-graph" style="width:{layout.graph}px"></span>
+      <span class="subject ellipsis">Subject</span>
+      <span class="refs"></span>
+      {#each COLS as col}
+        <span class="c-{col} th">
+          {{ author: 'Author', date: 'Date', hash: 'Hash' }[col]}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="col-grip"
+            title="Drag to resize · double-click to fit content{colW[col] ? '' : ' (auto)'}"
+            use:splitter={colDrag(col)}
+            ondblclick={() => colAuto(col)}
+          ></span>
+        </span>
+      {/each}
     </div>
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="scroller" bind:this={scroller} bind:clientHeight={viewH} onscroll={onScroll} tabindex="0" onkeydown={onKey} role="grid">
@@ -346,14 +461,14 @@
             onclick={(e) => clickRow(c, idx, e)}
             oncontextmenu={(e) => commitMenu(c, e)}
           >
-            <svg class="graph" width={graphW} height={ROW}>
+            <svg class="graph" width={layout.graph} height={ROW}>
               {#if g && !filtered}
                 {#each g.passes as p}<path d={curve(x(p.from), 0, x(p.to), ROW)} stroke={laneColor(p.color)} />{/each}
                 {#each g.incoming as p}<path d={curve(x(p.from), 0, x(g.col), ROW / 2)} stroke={laneColor(p.color)} />{/each}
                 {#each g.outgoing as p}<path d={curve(x(g.col), ROW / 2, x(p.to), ROW)} stroke={laneColor(p.color)} />{/each}
-                <circle cx={x(g.col)} cy={ROW / 2} r={c.parents.length > 1 ? 3 : 4} fill={laneColor(g.color)} stroke="var(--bg2)" stroke-width="1.5" />
+                <circle cx={x(g.col)} cy={ROW / 2} r={c.parents.length > 1 ? 3 : 4} fill={laneColor(g.color)} stroke="var(--bg2)" stroke-width="1.5"><title>{c.inMain ? 'Already in main' : 'Not in main yet'}</title></circle>
               {:else}
-                <circle cx="9" cy={ROW / 2} r="3.5" fill="var(--fg3)" />
+                <circle cx="9" cy={ROW / 2} r="3.5" fill={c.inMain ? laneColor(MAIN) : 'var(--accent)'}><title>{c.inMain ? 'Already in main' : 'Not in main yet'}</title></circle>
               {/if}
             </svg>
             <span class="subject ellipsis" class:dim={c.parents.length > 1}>{c.subject}</span>
@@ -376,16 +491,29 @@
   <!-- details -->
   <div class="details" style="width:{details}px">
     {#if detail}
-      <div class="files-head section-title">Changed files <span class="dim">{detail.files.length}</span></div>
+      <div class="files-head section-title row">
+        <span class="grow">Changed files <span class="dim">{detail.files.length}</span></span>
+        <button class="flat tiny" class:on={grouped} title={grouped ? 'Grouped by directory — click for a flat list' : 'Group by directory'} onclick={toggleGrouping}>🗀 Folders</button>
+      </div>
       <div class="cfiles">
-        {#each detail.files as f (f.path)}
+        {#each fileRows as row (row.key)}
+          {#if row.kind === 'dir'}
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+            <div class="cfile row cdir" style="padding-left:{10 + row.depth * 16}px" title={row.dir} onclick={() => (collapsedDirs[row.key] = !collapsedDirs[row.key])}>
+              <span class="caret dim">{collapsedDirs[row.key] ? '▸' : '▾'}</span>
+              <span class="ellipsis">🗀 {row.name}</span>
+              <span class="dim small">{row.count}</span>
+            </div>
+          {:else}
+          {@const f = row.item}
           {@const sp = splitPath(f.path)}
           <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <div class="cfile row" class:on={diffFile?.path === f.path} onclick={() => openFile(f)} title={(statusName[f.status] ?? f.status) + ': ' + (f.origPath ? `${f.origPath} → ` : '') + f.path}>
+          <div class="cfile row" style="padding-left:{10 + row.depth * 16 + (grouped ? 14 : 0)}px" class:on={diffFile?.path === f.path} onclick={() => openFile(f)} title={(statusName[f.status] ?? f.status) + ': ' + (f.origPath ? `${f.origPath} → ` : '') + f.path}>
             <span class="st st-{f.status}">{f.status}</span>
             <span class="fname fname-{f.status} ellipsis">{sp.name}</span>
-            <span class="dim ellipsis grow small">{sp.dir}</span>
+            <span class="dim ellipsis grow small">{grouped ? '' : sp.dir}</span>
           </div>
+          {/if}
         {/each}
       </div>
       <div class="meta selectable">
@@ -562,7 +690,8 @@
   .scroller:focus .crow.sel {
     background: var(--sel);
   }
-  .graph {
+  .graph,
+  .th-graph {
     flex: none;
   }
   .graph path {
@@ -584,16 +713,42 @@
     flex: none;
   }
   .c-author {
-    width: 130px;
+    width: var(--w-author, 130px);
     flex: none;
   }
   .c-date {
-    width: 140px;
+    width: var(--w-date, 140px);
     flex: none;
   }
   .c-hash {
-    width: 70px;
+    width: var(--w-hash, 70px);
     flex: none;
+  }
+  .th {
+    position: relative;
+    overflow: visible;
+    white-space: nowrap;
+  }
+  .col-grip {
+    position: absolute;
+    top: -3px;
+    bottom: -3px;
+    left: -7px;
+    width: 8px;
+    cursor: col-resize;
+  }
+  .col-grip::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: 1px;
+    background: var(--border);
+  }
+  .col-grip:hover::after {
+    background: var(--accent);
+    width: 2px;
   }
   .details {
     flex: none;
@@ -617,6 +772,20 @@
     background: var(--hover);
   }
   .cfile.on {
+    background: var(--sel);
+  }
+  .cdir {
+    gap: 4px;
+  }
+  .caret {
+    width: 10px;
+  }
+  .files-head button {
+    text-transform: none;
+    letter-spacing: normal;
+    font-weight: normal;
+  }
+  .files-head .on {
     background: var(--sel);
   }
   .fname {

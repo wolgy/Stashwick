@@ -71,6 +71,8 @@ export interface Commit {
   time: number
   subject: string
   refs: RefLabel[]
+  /** reachable from main/master (local or remote) */
+  inMain: boolean
 }
 export interface ChangedFile {
   status: string

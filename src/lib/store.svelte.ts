@@ -11,6 +11,8 @@ export interface Settings {
   pullRebase: boolean
   logPageSize: number
   theme: 'auto' | 'dark' | 'light'
+  /** show changed files as a directory tree instead of a flat list */
+  groupByDir: boolean
 }
 export interface Config {
   workspaces: Workspace[]
@@ -25,7 +27,7 @@ const defaultConfig = (): Config => ({
   activeWorkspace: 'default',
   activeRepo: null,
   lastRepoByWorkspace: {},
-  settings: { gitPath: '', editor: 'zed', pullRebase: false, logPageSize: 1000, theme: 'auto' },
+  settings: { gitPath: '', editor: 'zed', pullRebase: false, logPageSize: 1000, theme: 'auto', groupByDir: false },
 })
 
 export interface ConsoleEntry {

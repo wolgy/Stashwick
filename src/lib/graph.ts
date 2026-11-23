@@ -25,6 +25,9 @@ export interface GraphState {
 }
 export const newGraphState = (): GraphState => ({ lanes: [], colors: [], nextColor: 0 })
 
+/** Color index for commits (and the lines below them) that are already in main/master. */
+export const MAIN = -1
+
 /**
  * Assign commits (topo-ordered, newest first) to lanes, IDEA/gitk style.
  * Pass the state returned for the previous page to continue where it ended.
@@ -44,9 +47,10 @@ export function layoutGraph(commits: Commit[], state: GraphState = newGraphState
     if (col === -1) {
       col = firstFree()
       lanes[col] = c.hash
-      colors[col] = state.nextColor++
+      colors[col] = c.inMain ? MAIN : state.nextColor++
     }
-    const color = colors[col]
+    // ancestors of a main commit are in main too, so everything below it is MAIN
+    const color = c.inMain ? MAIN : colors[col]
     const incoming: GraphRow['incoming'] = []
     top.forEach((h, i) => {
       if (h === c.hash) incoming.push({ from: i, color: topColors[i] })
@@ -67,11 +71,11 @@ export function layoutGraph(commits: Commit[], state: GraphState = newGraphState
           colors[idx] = color
         } else {
           idx = firstFree()
-          colors[idx] = state.nextColor++
+          colors[idx] = c.inMain ? MAIN : state.nextColor++
         }
         lanes[idx] = p
       }
-      outgoing.push({ to: idx, color: colors[idx] })
+      outgoing.push({ to: idx, color: c.inMain ? MAIN : colors[idx] })
     })
     while (lanes.length && lanes[lanes.length - 1] === null) {
       lanes.pop()
@@ -96,4 +100,5 @@ export function layoutGraph(commits: Commit[], state: GraphState = newGraphState
 const LANE_COLORS = [
   '#4c9aff', '#f5a623', '#36b37e', '#e5556f', '#a77bf3', '#00b8d9', '#ff8b3d', '#8bc34a', '#f06292', '#ffd54f',
 ]
-export const laneColor = (i: number) => LANE_COLORS[i % LANE_COLORS.length]
+const MAIN_COLOR = '#8a8f98'
+export const laneColor = (i: number) => (i === MAIN ? MAIN_COLOR : LANE_COLORS[i % LANE_COLORS.length])

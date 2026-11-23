@@ -1,8 +1,9 @@
 <script lang="ts">
   import { api, type FileDiff, type FileStatus } from '../lib/api'
-  import { app, op, repo, confirm, toast, showMenu, openInEditor, mod, modLabel, refreshStatus, type MenuItem } from '../lib/store.svelte'
+  import { app, op, repo, confirm, toast, showMenu, openInEditor, mod, modLabel, refreshStatus, saveConfig, type MenuItem } from '../lib/store.svelte'
   import { pushDialog } from '../lib/actions'
   import { splitter, sizeStore, copyText, splitPath } from '../lib/ui'
+  import { fileTree, inDir, type TreeRow } from '../lib/filetree'
   import DiffView from './DiffView.svelte'
 
   type Group = 'conflicts' | 'staged' | 'changes' | 'untracked'
@@ -24,6 +25,7 @@
   let anchor: string | null = null
   let diff = $state<FileDiff | null>(null)
   let collapsed = $state<Record<string, boolean>>({})
+  let collapsedDirs = $state<Record<string, boolean>>({})
 
   const drafts: Record<string, string> = {}
   let message = $state('')
@@ -44,10 +46,28 @@
     }
     return g
   })
-  const ordered = $derived(
-    (['conflicts', 'staged', 'changes', 'untracked'] as Group[]).flatMap((g) => (collapsed[g] ? [] : groups[g])),
-  )
   const entryKey = (e: Entry) => `${e.group}\u0000${e.f.path}`
+  const grouped = $derived(app.config.settings.groupByDir)
+  // what each group shows: a flat list, or a directory tree (file keys equal entryKey)
+  const rows = $derived.by(() => {
+    const r = {} as Record<Group, TreeRow<Entry>[]>
+    for (const g of Object.keys(groups) as Group[]) {
+      r[g] = grouped
+        ? fileTree(groups[g], (e) => e.f.path, (k) => !!collapsedDirs[k], `${g}\u0000`)
+        : groups[g].map((e) => ({ kind: 'file' as const, key: entryKey(e), item: e, depth: 0 }))
+    }
+    return r
+  })
+  // visible files in screen order, for keyboard navigation and Shift-click ranges
+  const ordered = $derived(
+    (['conflicts', 'staged', 'changes', 'untracked'] as Group[]).flatMap((g) =>
+      collapsed[g] ? [] : rows[g].flatMap((row) => (row.kind === 'file' ? [row.item] : [])),
+    ),
+  )
+  function toggleGrouping() {
+    app.config.settings.groupByDir = !grouped
+    saveConfig()
+  }
   const selectedEntry = $derived(ordered.find((e) => entryKey(e) === selectedKey) ?? null)
 
   // keep commit message per repository
@@ -169,11 +189,11 @@
     showMenu(ev, items)
   }
 
-  function groupMenu(g: Group, ev: MouseEvent) {
-    const es = groups[g]
+  function groupMenu(g: Group, ev: MouseEvent, es = groups[g]) {
     const items: (MenuItem | '-')[] = []
     if (g === 'staged') items.push({ label: 'Unstage All', action: () => unstage(es) })
     else if (g !== 'conflicts') items.push({ label: 'Stage All', action: () => stage(es) }, { label: 'Rollback All…', danger: true, action: () => rollback(es) })
+    if (es !== groups[g]) items.push('-', { label: 'Open in Editor', action: () => openInEditor(es.map((e) => e.f.path)) })
     showMenu(ev, items)
   }
 
@@ -255,6 +275,7 @@
         <button class="icon" title="Stage all" disabled={!groups.changes.length && !groups.untracked.length} onclick={() => stage([...groups.changes, ...groups.untracked])}>＋ Stage All</button>
         <button class="icon" title="Unstage all" disabled={!groups.staged.length} onclick={() => unstage(groups.staged)}>－ Unstage All</button>
         <span class="grow"></span>
+        <button class="icon" class:on={grouped} title={grouped ? 'Grouped by directory — click for a flat list' : 'Group by directory'} onclick={toggleGrouping}>🗀 Folders</button>
         <span class="dim small">{files.length} file{files.length === 1 ? '' : 's'}</span>
       </div>
       {#if !app.status}
@@ -280,13 +301,32 @@
             {/if}
           </div>
           {#if !collapsed[g]}
-            {#each groups[g] as e (entryKey(e))}
-              {@const k = entryKey(e)}
+            {#each rows[g] as row (row.key)}
+              {#if row.kind === 'dir'}
+                {@const es = inDir(groups[g], (x) => x.f.path, row.dir)}
+                <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+                <div class="dir-row row" style="padding-left:{24 + row.depth * 16}px" title={row.dir} onclick={() => (collapsedDirs[row.key] = !collapsedDirs[row.key])} oncontextmenu={(ev) => groupMenu(g, ev, es)}>
+                  <span class="caret">{collapsedDirs[row.key] ? '▸' : '▾'}</span>
+                  <span class="ellipsis">🗀 {row.name}</span>
+                  <span class="dim small grow">{row.count}</span>
+                  <span class="acts">
+                    {#if g === 'staged'}
+                      <button class="mini" title="Unstage folder" onclick={(ev) => { ev.stopPropagation(); unstage(es) }}>－</button>
+                    {:else if g !== 'conflicts'}
+                      <button class="mini" title="Rollback folder" onclick={(ev) => { ev.stopPropagation(); rollback(es) }}>↺</button>
+                      <button class="mini" title="Stage folder" onclick={(ev) => { ev.stopPropagation(); stage(es) }}>＋</button>
+                    {/if}
+                  </span>
+                </div>
+              {:else}
+              {@const e = row.item}
+              {@const k = row.key}
               {@const sp = splitPath(e.f.path)}
               {@const cls = e.code === '?' ? 'Q' : e.code}
               <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
               <div
                 class="file row"
+                style="padding-left:{24 + row.depth * 16 + (grouped ? 14 : 0)}px"
                 class:sel={multi.has(k)}
                 class:focus={selectedKey === k}
                 data-key={k}
@@ -297,7 +337,7 @@
               >
                 <span class="st st-{cls}">{e.code === '?' ? 'U' : e.code}</span>
                 <span class="fname fname-{cls}">{sp.name}</span>
-                <span class="dir dim ellipsis grow">{e.f.origPath && e.group === 'staged' ? `← ${e.f.origPath}` : sp.dir}</span>
+                <span class="dir dim ellipsis grow">{e.f.origPath && e.group === 'staged' ? `← ${e.f.origPath}` : grouped ? '' : sp.dir}</span>
                 <span class="acts">
                   {#if e.group === 'conflicts'}
                     <button class="mini primary" onclick={(ev) => { ev.stopPropagation(); app.mergeFile = e.f.path }}>Resolve</button>
@@ -309,6 +349,7 @@
                   {/if}
                 </span>
               </div>
+              {/if}
             {/each}
           {/if}
         {/if}
@@ -434,8 +475,22 @@
     display: none;
     gap: 2px;
   }
-  .file:hover .acts {
+  .file:hover .acts,
+  .dir-row:hover .acts {
     display: flex;
+  }
+  .dir-row {
+    padding-right: 8px;
+    gap: 4px;
+    height: 24px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .dir-row:hover {
+    background: var(--hover);
+  }
+  .toolbar .icon.on {
+    background: var(--sel);
   }
   .mini {
     padding: 0 6px;
