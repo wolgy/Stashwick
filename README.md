@@ -43,30 +43,20 @@ The app refreshes automatically when you switch back to it and every few seconds
 
 ## Install
 
-### Option A: let GitHub build it (easiest)
+Download the installer for your platform from the [Releases](https://github.com/wolgy/Stashwick/releases) page:
 
-1. Push this folder to a GitHub repository (it can be private).
-2. Push a tag (`git tag v0.1.0 && git push --tags`), or open **Actions → Build installers → Run workflow**.
-3. Download your installer from the draft **Release** or from the workflow run's artifacts:
-   - macOS: `.dmg` (Apple Silicon and Intel)
-   - Windows: `.msi` / `-setup.exe`
-   - Linux: `.deb` / `.rpm` / `.AppImage`
+- **macOS**: `.dmg` (Apple Silicon and Intel)
+- **Windows**: `.msi` or `-setup.exe`
+- **Linux**: `.deb`, `.rpm` or `.AppImage`
 
-These builds are not code-signed. On first launch:
+Stashwick needs `git` installed and on your PATH.
 
-- **macOS** says the app "is damaged" or "can't be opened". Run `xattr -cr /Applications/Stashwick.app` once, or right-click → Open.
+The builds are not code-signed yet, so on first launch:
+
+- **macOS** may say the app "is damaged" or "can't be opened". Right-click the app → *Open*, or run `xattr -cr /Applications/Stashwick.app` once.
 - **Windows** SmartScreen: click *More info → Run anyway*.
 
-### Option B: build locally
-
-Prerequisites: [Rust](https://rustup.rs), Node.js 20+, and the [Tauri system dependencies](https://tauri.app/start/prerequisites/) (Xcode CLT on macOS, WebView2 + MSVC build tools on Windows, `libwebkit2gtk-4.1-dev` etc. on Linux).
-
-```sh
-npm install
-npm run app:build        # installers land in src-tauri/target/release/bundle/
-npm run app:dev          # run with hot reload while hacking on the UI
-npm test                 # backend tests (spin up temporary git repos)
-```
+To build it yourself, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Notes
 
@@ -74,18 +64,7 @@ npm test                 # backend tests (spin up temporary git repos)
 - **PATH on macOS**: GUI apps don't inherit your shell's PATH. Stashwick adds `/opt/homebrew/bin`, `/usr/local/bin` and `~/.local/bin` itself. If `git` or `zed` lives somewhere else, set the full path in Settings.
 - **Settings and workspaces** are stored in `config.json` in the OS config directory (`~/Library/Application Support/dev.stashwick.app/`, `%APPDATA%\dev.stashwick.app\`, `~/.config/dev.stashwick.app/`).
 
-## Code map
-
-```
-src-tauri/src/git.rs     every git operation (status, diff, log, branches, merge, stash, conflicts…) + tests
-src-tauri/src/patch.rs   unified-diff parser and partial-patch builder for hunk/line staging
-src-tauri/src/lib.rs     Tauri commands, config persistence, editor launch
-src/lib/store.svelte.ts  app state, refresh, op() wrapper (busy/console/toasts), workspaces
-src/lib/actions.ts       push/pull/branch/reset/… flows with their dialogs
-src/lib/graph.ts         commit-graph lane layout
-src/lib/diff3.ts         Myers line diff + 3-way merge for the conflict resolver
-src/components/          Sidebar, CommitView, DiffView, LogView, BranchesPopup, MergeTool, Panels, Overlays
-```
+## Roadmap
 
 Ideas for later: more interactive rebase (reorder, reword, drop), file history and blame view, a shelf, syntax highlighting in diffs, submodule support.
 
