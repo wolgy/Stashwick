@@ -79,6 +79,7 @@ cmd_mut!(squash(hashes: Vec<String>, message: String) -> String => |r| git::squa
 cmd_mut!(create_tag(name: String, rev: String, message: String) -> String => |r| git::create_tag(r, &name, &rev, &message));
 cmd_mut!(fetch() -> String => |r| git::fetch(r));
 cmd_mut!(pull(rebase: bool) -> String => |r| git::pull(r, rebase));
+cmd_mut!(pull_branch(name: String, kind: String, rebase: bool) -> String => |r| git::pull_branch(r, &name, &kind, rebase));
 cmd_mut!(push(branch: Option<String>, force: bool, tags: bool) -> String => |r| git::push(r, branch.as_deref(), force, tags));
 cmd!(stash_list() -> Vec<git::StashEntry> => |r| git::stash_list(r));
 cmd_mut!(stash_push(message: String, untracked: bool) -> String => |r| git::stash_push(r, &message, untracked));
@@ -209,7 +210,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             status, file_diff, apply_lines, stage, unstage, rollback, commit, last_message, log, commit_detail,
             commit_file_diff, branches, remotes, checkout, create_branch, delete_branch, rename_branch, merge, rebase,
-            sequencer, cherry_pick, revert, reset, squash, create_tag, fetch, pull, push, stash_list, stash_push, stash_action,
+            sequencer, cherry_pick, revert, reset, squash, create_tag, fetch, pull, pull_branch, push, stash_list, stash_push, stash_action,
             conflict_versions, resolve_conflict, accept_side, worktree_list, worktree_add, worktree_action, open_repo, summaries, scan_repos, set_git_path,
             git_version, open_in_editor, load_config, save_config
         ])

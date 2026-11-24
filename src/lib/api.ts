@@ -183,6 +183,8 @@ export const api = {
     call<string>('create_tag', { repo, name, rev, message }),
   fetch: (repo: string) => call<string>('fetch', { repo }),
   pull: (repo: string, rebase: boolean) => call<string>('pull', { repo, rebase }),
+  pullBranch: (repo: string, name: string, kind: string, rebase: boolean) =>
+    call<string>('pull_branch', { repo, name, kind, rebase }),
   push: (repo: string, branch: string | null, force: boolean, tags: boolean) =>
     call<string>('push', { repo, branch, force, tags }),
   stashList: (repo: string) => call<StashEntry[]>('stash_list', { repo }),

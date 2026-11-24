@@ -1071,6 +1071,43 @@ pub fn pull(repo: &Path, rebase: bool) -> R<String> {
     }
 }
 
+/// Pull from the branch context menu.
+/// - `remote` branch: pull it into the current branch (merge or rebase).
+/// - `local`, non-current branch: fast-forward it from its upstream without checking it out.
+/// - current branch: plain `pull`.
+pub fn pull_branch(repo: &Path, name: &str, kind: &str, rebase: bool) -> R<String> {
+    not_option("branch", name)?;
+    let mode: &[&str] = if rebase { &["pull", "--rebase"] } else { &["pull", "--no-rebase", "--no-edit"] };
+    match kind {
+        "remote" => {
+            // Remote names may contain '/': pick the longest configured remote that prefixes the name.
+            let rs = remotes(repo)?;
+            let remote = rs
+                .iter()
+                .filter(|r| name.len() > r.len() + 1 && name.starts_with(r.as_str()) && name.as_bytes()[r.len()] == b'/')
+                .max_by_key(|r| r.len())
+                .ok_or_else(|| format!("No remote found for {name}"))?;
+            let branch = &name[remote.len() + 1..];
+            let mut a = mode.to_vec();
+            a.extend([remote.as_str(), branch]);
+            run_op(repo, &a)
+        }
+        "local" => {
+            let current = run_s(repo, &["symbolic-ref", "--short", "-q", "HEAD"]).ok().map(|s| s.trim().to_string());
+            if current.as_deref() == Some(name) {
+                return pull(repo, rebase);
+            }
+            let cfg = |k: &str| run_s(repo, &["config", "--get", &format!("branch.{name}.{k}")]).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+            let (Some(remote), Some(merge)) = (cfg("remote"), cfg("merge")) else {
+                return Err(format!("{name} has no upstream branch to pull from."));
+            };
+            // No leading '+': git refuses anything but a fast-forward.
+            run_op(repo, &["fetch", &remote, &format!("{merge}:refs/heads/{name}")])
+        }
+        _ => Err(format!("Can't pull a {kind}")),
+    }
+}
+
 /// Push `branch` (None = current). Sets upstream when missing.
 pub fn push(repo: &Path, branch: Option<&str>, force: bool, tags: bool) -> R<String> {
     let current = run_s(repo, &["symbolic-ref", "--short", "-q", "HEAD"]).ok().map(|s| s.trim().to_string());

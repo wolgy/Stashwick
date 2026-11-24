@@ -34,6 +34,24 @@ export async function pullDialog() {
   await op('Pull', (x) => api.pull(x, r.mode === 'rebase'), { success: 'Pulled' })
 }
 
+/**
+ * Pull from a branch's context menu: the current branch pulls normally, another local branch is
+ * fast-forwarded from its upstream without checkout, a remote branch is pulled into the current one.
+ */
+export async function pullBranch(b: BranchInfo) {
+  const rebase = app.config.settings.pullRebase
+  const how = rebase ? 'rebase' : 'merge'
+  if (b.kind === 'remote') {
+    const cur = app.status?.branch ?? 'HEAD'
+    return op(`Pull ${b.name} into ${cur} (${how})`, (r) => api.pullBranch(r, b.name, 'remote', rebase), { success: `Pulled ${b.name} into ${cur}` })
+  }
+  if (b.current) return pull()
+  // git won't update a branch that's checked out elsewhere — pull in that worktree instead
+  const wt = otherWorktree(b)
+  if (wt) return op(`Pull ${b.name} in ${repoName(wt)} (${how})`, () => api.pull(wt, rebase), { success: `Pulled ${b.name}` })
+  await op(`Update ${b.name}`, (r) => api.pullBranch(r, b.name, 'local', rebase), { success: `Updated ${b.name} from ${b.upstream}` })
+}
+
 /** IDEA-style push dialog: shows outgoing commits before pushing. */
 export async function pushDialog(branch: string | null = null, presetForce = false) {
   const r = repo()
@@ -259,8 +277,14 @@ export function branchMenuItems(b: BranchInfo, extra: (MenuItem | '-')[] = []): 
   const wt = otherWorktree(b)
   if (wt) items.unshift({ label: `Open Worktree '${repoName(wt)}'`, action: () => openWorktree(wt) }, '-')
   if (b.kind !== 'tag' && !isCur && !wt) items.push({ label: 'Checkout in New Worktree…', action: () => newWorktree(b) })
+  if (b.kind === 'remote' && cur) {
+    items.push('-', { label: `Pull '${b.name}' into '${cur}'`, action: () => pullBranch(b) })
+  }
   if (b.kind === 'local') {
-    items.push('-', { label: 'Push…', action: () => pushDialog(b.name) }, { label: 'Rename…', action: () => renameBranch(b) })
+    items.push('-')
+    if (b.upstream && !b.gone)
+      items.push({ label: isCur || otherWorktree(b) ? 'Pull' : 'Pull (fast-forward only)', action: () => pullBranch(b) })
+    items.push({ label: 'Push…', action: () => pushDialog(b.name) }, { label: 'Rename…', action: () => renameBranch(b) })
   }
   items.push(...extra)
   if (!isCur && !wt) items.push('-', { label: 'Delete', danger: true, action: () => deleteBranch(b) })
